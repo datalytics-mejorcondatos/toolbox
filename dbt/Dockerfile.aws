@@ -1,0 +1,43 @@
+# build site
+# FROM python:3.7-slim as dbt_project
+# We use a multi-stage build https://docs.docker.com/develop/develop-images/multistage-build/
+# First image corresponds to dbt project, second to webserver for serving the docs
+# Based on https://discourse.getdbt.com/t/publishing-dbt-docs-from-a-docker-container/141/4
+FROM public.ecr.aws/lts/ubuntu:latest as dbt_project
+
+# here add the environment variables you need and will pass via --build-arg
+# As we use AWS CodeBuild for building the image, we need to pass credentials so we don't get an error: https://docs.aws.amazon.com/codebuild/latest/userguide/troubleshooting.html#troubleshooting-versions
+ARG AWS_DEFAULT_REGION
+ARG AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
+
+ADD dbt-project /dbt-project
+
+# Update and install system packages
+RUN apt-get update -y && \
+  apt-get install --no-install-recommends -y -q \
+  git libpq-dev python-dev && \
+  apt-get -y install python3-pip && \
+  apt-get clean && \
+  rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+  
+# Install DBT
+RUN pip install -U pip
+RUN pip install git+https://github.com/datalytics1/dbt-athena
+
+ENV DBT_DIR /dbt-project
+WORKDIR $DBT_DIR
+ENV DBT_PROFILES_DIR $DBT_DIR
+
+RUN dbt deps
+
+# build static pages
+RUN dbt docs generate
+
+# serve site
+# As we are working on AWS, we use ECR nginx image to avoid https://www.docker.com/increase-rate-limits#:~:text=You%20have%20reached%20your%20pull,Docker%20Pro%20or%20Team%20subscription.
+FROM public.ecr.aws/nginx/nginx:latest
+
+# here copy any nginx related files you might need for your deployment, for example nginx.conf
+# ADD ...
+
+COPY --from=dbt_project /dbt-project/target/index.html /dbt-project/target/manifest.json /dbt-project/target/catalog.json /dbt-project/target/run_results.json /usr/share/nginx/html/
